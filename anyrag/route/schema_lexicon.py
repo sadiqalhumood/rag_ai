@@ -19,6 +19,15 @@ from ..core.types import ColumnRole, TableProfile, TableRef, TableSchema
 
 _TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
 
+#: A categorical value directly after one of these is a verb, not a filter.
+_AUXILIARIES = frozenset(
+    {
+        "was", "were", "is", "are", "be", "been", "being", "am",
+        "has", "have", "had", "do", "does", "did", "get", "gets", "got",
+        "getting", "become", "became", "gets",
+    }
+)
+
 
 def tokenize(text: str) -> list[str]:
     return [t.lower() for t in _TOKEN.findall(text or "")]
@@ -69,6 +78,10 @@ class ValueMatch:
     column: str
     value: str
     span: int
+    #: Token index where the match starts, so callers can inspect the
+    #: surrounding words. Needed to tell a filter literal from a verb that
+    #: happens to collide with a category value.
+    start: int = 0
 
 
 @dataclass
@@ -190,6 +203,12 @@ class SchemaLexicon:
 
         Only CATEGORICAL columns are indexed. Matching free-text values here
         would produce nonsense equality predicates on prose columns.
+
+        A match immediately preceded by an auxiliary verb is dropped. "How many
+        orders were **placed** in 2024" collides with the `status` value
+        'placed', and filtering on it turned a true answer of 725 into a
+        confident 145. After an auxiliary, a word like that is a past
+        participle, not a filter literal.
         """
         tokens = tokenize(question)
         used: set[int] = set()
@@ -200,9 +219,16 @@ class SchemaLexicon:
             entries = self._value_index.get(gram)
             if not entries:
                 continue
+            if i > 0 and tokens[i - 1] in _AUXILIARIES:
+                # Consume the span so a shorter sub-gram cannot re-match it,
+                # but emit nothing.
+                used.update(range(i, i + n))
+                continue
             for table, column, value in entries:
                 out.append(
-                    ValueMatch(table=table, column=column, value=value, span=n)
+                    ValueMatch(
+                        table=table, column=column, value=value, span=n, start=i
+                    )
                 )
             used.update(range(i, i + n))
         return out

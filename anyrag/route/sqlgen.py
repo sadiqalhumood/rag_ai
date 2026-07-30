@@ -44,8 +44,13 @@ _AGG_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 _ISO_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 _YEAR = re.compile(r"\b(19|20)\d{2}\b")
+# Bare "by" is deliberately NOT a grouping cue. In "orders were placed by
+# customers in the Gulf region" it marks the agent of a passive verb, and
+# treating it as GROUP BY turned a filtered count into a grouped listing.
+# Every cue here is unambiguously distributive.
 _GROUPBY_CUE = re.compile(
-    r"\b(?:per|by|for each|grouped by|group by|broken down by)\s+(.{1,40})",
+    r"\b(?:per|for each|in each|of each|grouped by|group by|broken down by"
+    r"|for every|in every|each|every)\s+(.{1,40})",
     re.IGNORECASE,
 )
 
@@ -73,7 +78,8 @@ class SqlPlan:
     table: TableRef
     agg: str = "COUNT"
     target: str | None = None
-    group_by: str | None = None
+    #: (table, column) -- the grouping column may live on the joined table.
+    group_by: tuple[TableRef, str] | None = None
     filters: list[str] = field(default_factory=list)
     join: tuple[TableRef, str, str] | None = None
     explanation: str = ""
@@ -155,21 +161,36 @@ class HeuristicSqlGenerator:
         return []
 
     def _detect_group_by(
-        self, question: str, lex: SchemaLexicon, table: TableRef
-    ) -> str | None:
+        self, question: str, lex: SchemaLexicon, tables: Sequence[TableRef]
+    ) -> tuple[TableRef, str] | None:
+        """Find the grouping column, which may live on the joined table.
+
+        "How many customers are in each region" groups by a column of
+        `regions`, not `customers`; restricting the search to the primary table
+        silently dropped the GROUP BY and returned one global total instead.
+        """
         match = _GROUPBY_CUE.search(question)
         if not match:
             return None
         tail = match.group(1)
-        for cand in lex.match_columns(tail):
-            if cand.table == table and cand.role in (
-                ColumnRole.CATEGORICAL,
-                ColumnRole.DATE,
-                ColumnRole.BOOLEAN,
-                ColumnRole.ID,
-            ):
-                return cand.column
-        return None
+        groupable = (
+            ColumnRole.CATEGORICAL,
+            ColumnRole.DATE,
+            ColumnRole.BOOLEAN,
+            ColumnRole.ID,
+        )
+        candidates = [
+            c for c in lex.match_columns(tail)
+            if c.table in tables and c.role in groupable
+        ]
+        if not candidates:
+            return None
+        # Prefer a categorical (a readable label) over a bare key.
+        candidates.sort(
+            key=lambda c: (c.role is not ColumnRole.CATEGORICAL, -c.span, c.column)
+        )
+        best = candidates[0]
+        return best.table, best.column
 
     def _pick_table(
         self, question: str, lex: SchemaLexicon
@@ -237,7 +258,11 @@ class HeuristicSqlGenerator:
         agg, cue = self._detect_agg(question)
         table, join = self._pick_table(question, lex)
         target = self._detect_target(question, lex, table, agg)
-        group_by = self._detect_group_by(question, lex, table)
+        scope = [table] + ([join[0]] if join is not None else [])
+        group_by = self._detect_group_by(question, lex, scope)
+        if group_by is not None and group_by[0] != table and join is None:
+            # Cannot group by a column of a table we are not joining to.
+            group_by = None
 
         filters: list[str] = []
         for vmatch in lex.match_values(question):
@@ -271,9 +296,13 @@ class HeuristicSqlGenerator:
                 raise SqlGenerationError(f"{plan.agg} requires a target column")
             select_expr = f"{plan.agg}({table}.{_quote_ident(plan.target)})"
 
+        gb = None
+        if plan.group_by is not None:
+            gb_table, gb_col = plan.group_by
+            gb = f"{_quote_ident(gb_table.name)}.{_quote_ident(gb_col)}"
+
         parts = ["SELECT"]
-        if plan.group_by:
-            gb = f"{table}.{_quote_ident(plan.group_by)}"
+        if gb:
             parts.append(f"{gb}, {select_expr} AS value")
         else:
             parts.append(f"{select_expr} AS value")
@@ -296,8 +325,8 @@ class HeuristicSqlGenerator:
         ]
         if rendered_filters:
             parts.append("WHERE " + " AND ".join(rendered_filters))
-        if plan.group_by:
-            parts.append(f"GROUP BY {table}.{_quote_ident(plan.group_by)}")
+        if gb:
+            parts.append(f"GROUP BY {gb}")
             parts.append("ORDER BY value DESC")
 
         return " ".join(parts)

@@ -274,3 +274,41 @@ A column literally named `set` or `into` would be rejected. Accepted: the
 deny-words only match on word boundaries (so `offset`, `dataset_id`,
 `is_deleted` are all fine), and the failure mode is a rejected query rather than
 an executed write.
+
+### D26. NL->SQL: passive-participle ambiguity is a documented limitation
+End-to-end testing against the real synthetic database exposed a silent 5x
+error: "How many orders were **placed** in 2024" generated
+`WHERE status = 'placed'`, because 'placed' is both a verb and a value of the
+`status` column. True answer 725, reported 145 — exactly the confident-wrong-
+number failure the routing design exists to prevent, produced by the router
+itself.
+
+Fix: a categorical value directly preceded by an auxiliary verb (was/were/is/
+are/has/…) is treated as a past participle, not a filter literal.
+
+**This rule is symmetric, and I am not claiming it is right in both
+directions.** "How many orders were **shipped** in 2023" now misses an intended
+`status = 'shipped'` filter and returns 775 instead of 156. Both phrasings are
+passive participles after an auxiliary; English does not distinguish them here,
+and no lexical rule I could find separates "placed" (generic creation verb) from
+"shipped" (genuine status). The choice is between a spurious filter that narrows
+to a wrong smaller number and a missing filter that widens to a wrong larger
+one. Neither is safe; both are wrong.
+
+I took the conservative direction — no speculative filter — and left the cost
+visible rather than hidden. The eval's aggregate-accuracy number measures it
+directly. Deliberately not tuned further against hand-written examples, because
+at that point I would be fitting the generator to questions I invented.
+
+### D27. Bare "by" is not a GROUP BY cue
+"How many orders were placed **by** customers in the Gulf region" was parsed as
+a grouping request, turning a filtered count into a grouped listing. In English,
+"by" after a passive verb marks the agent. Only unambiguously distributive cues
+(per, for each, in each, every, grouped by, broken down by) now trigger grouping.
+
+### D28. Known limitation: only single-hop FK joins
+`orders -> regions` requires two hops (via `customers`), and the generator
+supports one. "How many orders per region" therefore picks the wrong primary
+table rather than refusing. Multi-hop join planning was out of scope for the
+heuristic generator; the eval's SQL-coverage and aggregate-accuracy numbers
+report the cost rather than concealing it.
