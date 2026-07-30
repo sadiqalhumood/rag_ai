@@ -339,3 +339,7 @@ avoid fitting noise:
 - Unanchored unknown values ("orders placed by fax", "currently backordered").
   Catching these means testing every content word against every categorical
   vocabulary, which invites false refusals on legitimate questions.
+
+### D29a. Router freeze commit
+`0439893552d38469ea65c9a48ee8ed04c156bbe7` — `route/router.py`, `route/sqlgen.py`, `route/schema_lexicon.py` frozen here.
+Any later change to these three files invalidates the held-out run and forces a re-freeze.
