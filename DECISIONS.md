@@ -341,5 +341,12 @@ avoid fitting noise:
   vocabulary, which invites false refusals on legitimate questions.
 
 ### D29a. Router freeze commit
-`0439893552d38469ea65c9a48ee8ed04c156bbe7` — `route/router.py`, `route/sqlgen.py`, `route/schema_lexicon.py` frozen here.
-Any later change to these three files invalidates the held-out run and forces a re-freeze.
+**`60adca7`** — `route/router.py`, `route/sqlgen.py`, `route/schema_lexicon.py`
+frozen here. Any later change to these three files invalidates the held-out run
+and forces a re-freeze.
+
+Originally recorded as `0439893552d38469ea65c9a48ee8ed04c156bbe7`. That commit was rewritten by a
+`--reset-author` rebase to fix commit attribution; the content of the three
+frozen files is byte-identical, only the commit object changed. Recording the
+supersession rather than silently editing the SHA, since this reference is the
+evidence that the held-out templates were written after the freeze.
