@@ -60,6 +60,16 @@ _ATTR_REQUEST = re.compile(
     re.IGNORECASE,
 )
 
+#: Entity-type requests: "how many <thing>", "which <thing> <verb>".
+_ENTITY_REQUEST = re.compile(
+    r"\bhow\s+many\s+(?P<ent>[\w' -]{2,30}?)\s+"
+    r"(?:are|is|was|were|do|does|did|have|has|had|in|with|from|by|deliver|"
+    r"delivers|ship|ships|stock|stocks|belong|belongs)\b"
+    r"|\bwhich\s+(?P<ent2>[\w' -]{2,30}?)\s+"
+    r"(?:stores|store|manages|manage|supplies|supply|handles|handle)\b",
+    re.IGNORECASE,
+)
+
 #: Attribute words that are *about* the schema rather than a column in it.
 _META_ATTRIBUTES = frozenset(
     {"column", "columns", "field", "fields", "attribute", "attributes",
@@ -368,6 +378,50 @@ class SchemaLexicon:
                             seen.add(key)
                             problems.append(key)
         return problems
+
+    def unknown_entities(self, question: str) -> list[str]:
+        """Entity types the question counts or selects that do not exist.
+
+        "How many suppliers deliver to the Dammam region?" names a real region
+        but there is no suppliers table. Without this, the generator falls back
+        to whatever table it can find and answers about something else.
+        """
+        out: list[str] = []
+        for match in _ENTITY_REQUEST.finditer(question):
+            raw = next((g for g in match.groups() if g), None)
+            if not raw:
+                continue
+            phrase = " ".join(
+                t for t in tokenize(raw) if t not in _FUNCTION_WORDS
+            )
+            if not phrase or phrase in _META_ATTRIBUTES:
+                continue
+            if self._names_something(phrase):
+                continue
+            out.append(phrase)
+        return out
+
+    def date_range_outside_data(
+        self, lo: str, hi: str
+    ) -> bool:
+        """True if [lo, hi] lies entirely outside every date column's range.
+
+        The profile knows the observed min and max of each date column, so a
+        question about 2026 over a corpus spanning 2023-2024 is answerable only
+        as "there is no such data".
+        """
+        seen_any = False
+        for profile in self.profiles.values():
+            for prof in profile.columns.values():
+                if prof.role is not ColumnRole.DATE:
+                    continue
+                lo_v, hi_v = prof.min_value, prof.max_value
+                if lo_v is None or hi_v is None:
+                    continue
+                seen_any = True
+                if not (hi < str(lo_v)[:10] or lo > str(hi_v)[:10]):
+                    return False
+        return seen_any
 
     def unresolved_attributes(self, question: str) -> list[str]:
         """Attributes the question asks for that no column provides.

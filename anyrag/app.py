@@ -51,6 +51,20 @@ from .route.schema_lexicon import SchemaLexicon
 from .route.sqlgen import HeuristicSqlGenerator
 
 
+_DATE_PAIR = __import__("re").compile(
+    r"(\d{4}-\d{2}-\d{2})\D{1,20}?(\d{4}-\d{2}-\d{2})"
+)
+
+
+def _explicit_date_window(question: str) -> tuple[str, str] | None:
+    """Extract an explicit ISO date range from a question, if it has one."""
+    match = _DATE_PAIR.search(question)
+    if not match:
+        return None
+    lo, hi = match.group(1), match.group(2)
+    return (lo, hi) if lo <= hi else (hi, lo)
+
+
 @dataclass
 class IngestReport:
     """What an ingest run actually did.
@@ -332,6 +346,27 @@ class AnyRAG:
                     route=decision.route,
                     trace=trace,
                 )
+            unknown = self.lexicon.unknown_entities(question)
+            if unknown:
+                trace["unknown_entities"] = unknown
+                return Answer.refusal(
+                    "the data has no entity matching "
+                    + ", ".join(repr(u) for u in unknown),
+                    route=decision.route,
+                    trace=trace,
+                )
+
+        # A date window entirely outside the data's observed range cannot be
+        # answered from the data, whatever the route.
+        if self.lexicon is not None:
+            window = _explicit_date_window(question)
+            if window and self.lexicon.date_range_outside_data(*window):
+                trace["date_window_outside_data"] = list(window)
+                return Answer.refusal(
+                    f"the data covers no dates between {window[0]} and {window[1]}",
+                    route=decision.route,
+                    trace=trace,
+                )
 
         hits = self.retriever.retrieve(question, retrieval)
         trace[TRACE_RETRIEVAL] = getattr(self.retriever, "last_trace", {}) or {}
@@ -360,8 +395,19 @@ class AnyRAG:
                 question, hits, gen_config, decision.route, trace, **kwargs
             )
 
+        # A NULL scalar means the aggregate is undefined over the matched rows
+        # (AVG/MAX/MIN of nothing). There is no value to report, so reporting
+        # one would be inventing it. COUNT is exempt: zero is a real answer.
+        if scalar is None and len(sql_chunk.meta.get("columns", ())) == 1:
+            if sql_chunk.meta.get("row_count", 0) == 0 or "COUNT(" not in sql.upper():
+                if sql_chunk.meta.get("row_count", 0) <= 1:
+                    return Answer.refusal(
+                        "the query matched no rows, so the aggregate is undefined",
+                        route=decision.route,
+                        trace=trace,
+                    )
+
         trace[TRACE_SCALAR] = scalar
-        sql_hit = Hit(chunk=sql_chunk, score=1.0, rank=1, retriever="sql")
 
         # A successfully executed, linted query IS the evidence: the answer is
         # grounded by construction, so it does not go through the lexical

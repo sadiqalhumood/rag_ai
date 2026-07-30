@@ -312,3 +312,30 @@ supports one. "How many orders per region" therefore picks the wrong primary
 table rather than refusing. Multi-hop join planning was out of scope for the
 heuristic generator; the eval's SQL-coverage and aggregate-accuracy numbers
 report the cost rather than concealing it.
+
+### D29. Router frozen after dev-set-driven iteration — read the held-out gap
+Three rounds of guards took the dev false-answer rate 65.6% -> 46.9% -> 31.2%
+-> 12.5%. **All of that tuning was driven by inspecting dev-set failures**, which
+is precisely the leakage amendment 3 exists to detect.
+
+Each guard is derived from the schema rather than from question wording — an
+unresolvable categorical value, an attribute absent from the named table, an
+entity type that is not a table, a date window outside the data's observed
+range, and an aggregate that is undefined over zero rows. That is what should
+let them generalise. But "should" is a prediction, and the held-out set is what
+tests it.
+
+`route/router.py`, `route/sqlgen.py` and `route/schema_lexicon.py` are frozen at
+the commit recorded below. The held-out templates are written only afterwards,
+and dev vs held-out numbers are reported separately and never pooled. A large
+gap is the finding, not something to average away.
+
+Guards were deliberately NOT added for two remaining dev failure classes, to
+avoid fitting noise:
+- Near-miss free-text names ('Zephyr Mesh Router Proo', 'Youssef Al-ybrahim').
+  These are high-cardinality name columns with no categorical vocabulary to
+  check against; the generator's entity-coverage gate is the right mechanism and
+  is already calibrated.
+- Unanchored unknown values ("orders placed by fax", "currently backordered").
+  Catching these means testing every content word against every categorical
+  vocabulary, which invites false refusals on legitimate questions.
