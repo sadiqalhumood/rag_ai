@@ -238,6 +238,37 @@ hallucination and flatter the headline false-answer rate. Only
 undefined-on-empty aggregates and enumerate-and-cite questions are used as
 distractors. Enforced by a test rather than left to authorial discipline.
 
+### D24. Fused scores are on a (0,1] scale — cross-agent contract
+Raised by retrieval-eng, and the most consequential near-miss in the build.
+
+`GenerationConfig.min_support_score = 0.02` is an absolute threshold on
+`Hit.score`, but nothing in `core/` said what scale a fused score is on. Textbook
+RRF gives a top score of `1/(60+1) = 0.0164` when only one retriever
+contributes — **below the gate**. Every dense-only and bm25-only configuration
+would therefore have refused every question.
+
+That is 12 of the 18 ablation cells returning uniform zeros, and the failure is
+worse than the number suggests: the grid would have looked like a *finding*
+("single retrievers are useless, hybrid is essential") rather than a units
+mismatch between two subsystems. It would have been easy to write up and
+completely wrong.
+
+Fused scores are now normalised by dividing by the maximum attainable score.
+That is division by a constant, so ordering and ties are bit-identical to raw
+RRF (`normalize=False` yields the textbook value and is tested). Verified on the
+real MiniLM embedder across five configs.
+
+**The contract: any component producing `Hit.score` for consumption by the
+refusal gates must emit values on (0,1].** A future fusion change that ignores
+this makes the entire system refuse everything, silently.
+
+### D25. RRF is the fusion default; score fusion is implemented for the grid
+Dense cosine lives in [-1,1]; BM25 is an unbounded IDF sum whose magnitude
+depends on query and document length. Any score-level mix has to invent a
+per-query mapping between the two. RRF discards magnitude and uses only rank, so
+it needs no such invention. `normalized_score_fusion` exists so the grid can
+measure the trade-off rather than the choice resting on assertion.
+
 ### D12. `SET` and `INTO` are deny-listed despite false-positive risk
 A column literally named `set` or `into` would be rejected. Accepted: the
 deny-words only match on word boundaries (so `offset`, `dataset_id`,
