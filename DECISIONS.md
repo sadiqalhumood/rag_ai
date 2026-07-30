@@ -194,6 +194,50 @@ ingest-eng. Rather than add an unused helper in `core` and hope everyone adopts
 it, integration will assert that ingest-produced `RowRef`s for composite-key
 tables match the eval's gold refs exactly — a test beats a convention.
 
+### D20. `RetrievalConfig.name` no longer collapses unknown chunk-kind sets
+Found by eval-eng. The name mapping handled `{ROW}` and `{SCHEMA_CARD}` and sent
+everything else to `"both"`. A grid whose row cell was `{ROW, SQL_RESULT}` named
+itself identically to the both-kinds cell, so **18 ablation cells silently became
+12 and their results files overwrote each other**. The sweep would have reported
+a complete grid that was nothing of the kind.
+
+Names are identity here, not decoration: they key results files and table rows.
+Unmapped sets now get their own composed name. The three canonical ablation
+names are preserved so existing cell names do not shift.
+
+### D21. Aggregate results are structured data, not prose
+Added `Answer.value` and documented `TRACE_*` keys in `core/types.py`. eval-eng
+had been recovering an aggregate's number by regex-parsing the answer text,
+where "shipped 3 of 12 items" parses to 3. A scorer should never have to guess.
+The trace keys are a contract for the same reason: if producer and reader
+disagree on a key name, SQL coverage silently reads 0% rather than failing.
+
+Also added `Citation.kind`, so a schema-card citation (which legitimately has no
+row refs) is distinguishable from a useless one without cross-referencing the
+retrieval result.
+
+### D22. Known blind spot: date-range questions score like distractors
+Found by generation-eng while validating the 0.35 threshold. A legitimate
+date-range aggregate scores **0.134** weighted overlap — identical to a genuine
+distractor — so *no* value of `min_overlap` separates them. The cause is
+vocabulary mismatch rather than calibration: "April" never appears literally in
+`order_date: 2023-04-02`, and "revenue" never appears in `total_amount`, so all
+three terms carry maximum idf weight precisely because they are absent.
+
+Deliberately **not** patched. The obvious fix (month-name to number aliasing)
+was rejected without evidence: "04" as a month collides with "04" as a day, and
+there was no eval yet to measure the false-accept cost. The exposure is limited
+because date-range aggregates route to SQL, where an uncovered aggregate is
+supposed to refuse anyway; HYBRID questions are where it bites. To be revisited
+once the harness can actually score the tradeoff.
+
+### D23. "How many orders in March 2025" is not a distractor
+eval-eng's call, and the right one. Zero is the *correct* answer to that
+question, so scoring it as unanswerable would count a correct "0" as a
+hallucination and flatter the headline false-answer rate. Only
+undefined-on-empty aggregates and enumerate-and-cite questions are used as
+distractors. Enforced by a test rather than left to authorial discipline.
+
 ### D12. `SET` and `INTO` are deny-listed despite false-positive risk
 A column literally named `set` or `into` would be rejected. Accepted: the
 deny-words only match on word boundaries (so `offset`, `dataset_id`,

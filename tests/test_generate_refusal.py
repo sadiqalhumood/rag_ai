@@ -131,16 +131,34 @@ def test_question_naming_an_absent_entity_refuses() -> None:
         "What is the email of customer Zanzibar Petrov?", customer_hits(), CONFIG
     )
     assert decision.refuse
-    assert decision.code == "ungrounded_entities"
     assert set(decision.ungrounded_entities) == {"zanzibar", "petrov"}
+    # Both lexical gates independently reject it. Which one *reports* depends
+    # on evaluation order, so the code is deliberately not pinned here; the
+    # tests below isolate each gate's mechanism.
+    assert decision.gates["lexical_overlap"] is False
+    assert decision.gates["entity_coverage"] is False
+
+
+def test_entity_gate_catches_the_distractor_when_overlap_is_isolated() -> None:
+    """G4's mechanism, with G3 neutralised so it cannot mask the result."""
+    policy = RefusalPolicy.from_config(CONFIG, min_overlap=0.0)
+    decision = assess(
+        "What is the email of customer Zanzibar Petrov?",
+        customer_hits(),
+        policy=policy,
+    )
+    assert decision.refuse
+    assert decision.code == "ungrounded_entities"
 
 
 def test_plain_overlap_alone_would_not_discriminate() -> None:
-    """The distractor clears the plain-overlap bar; only G4 catches it.
+    """Plain overlap would admit the distractor; the weighted metric rejects it.
 
-    This is the whole justification for the weighted metric and the entity
-    gate. If it ever fails because the distractor's plain overlap fell below
-    the threshold, the discrimination happened by luck, not by design.
+    This is the whole justification for weighting by inverse document
+    frequency. The distractor's *plain* overlap sits above the configured
+    threshold purely on generic schema words ("email", "customer"), so a
+    plain-overlap gate at this threshold would answer it. Weighting collapses
+    it well below, while the answerable twin is unaffected.
     """
     hits = customer_hits()
     answerable = assess(
@@ -150,10 +168,13 @@ def test_plain_overlap_alone_would_not_discriminate() -> None:
         "What is the email of customer Zanzibar Petrov?", hits, CONFIG
     )
 
+    # Plain overlap would have let it through...
     assert distractor.plain_overlap >= CONFIG.min_overlap
+    # ...the weighted metric does not.
+    assert distractor.best_overlap < CONFIG.min_overlap
+    assert answerable.best_overlap >= CONFIG.min_overlap
     assert distractor.best_overlap < answerable.best_overlap
-    assert distractor.gates["lexical_overlap"] is True
-    assert distractor.gates["entity_coverage"] is False
+    assert distractor.refuse and not answerable.refuse
 
 
 def test_unrelated_question_refuses_on_overlap() -> None:
@@ -170,9 +191,10 @@ def test_absent_year_refuses() -> None:
     hits = [make_hit("o1", "order_id: 1 | order_date: 2023-04-02 | total: 90.0", 0.9),
             make_hit("o2", "order_id: 2 | order_date: 2024-01-11 | total: 55.5", 0.8)]
     assert assess("How many orders were placed in 2023?", hits, CONFIG).refuse is False
+
     absent = assess("How many orders were placed in 1998?", hits, CONFIG)
     assert absent.refuse
-    assert absent.code == "ungrounded_entities"
+    assert absent.ungrounded_entities == ("1998",)
 
 
 def test_near_duplicate_arabic_spelling_still_counts_as_grounded() -> None:
@@ -195,25 +217,34 @@ def test_policy_is_derived_from_generation_config() -> None:
     assert policy.min_overlap == 0.4
 
 
-def test_entity_gate_can_be_disabled_for_ablation() -> None:
+def test_disabling_the_entity_gate_does_not_admit_the_distractor() -> None:
+    """The gates are defence in depth: G3 holds when G4 is ablated away.
+
+    At the configured threshold the weighted-overlap gate catches this
+    distractor on its own, so switching off entity coverage no longer opens a
+    hole. That redundancy is the point -- neither gate is a single point of
+    failure for the headline false-answer metric.
+    """
     hits = customer_hits()
     policy = RefusalPolicy.from_config(CONFIG, require_entity_coverage=False)
     decision = assess(
         "What is the email of customer Zanzibar Petrov?", hits, policy=policy
     )
-    assert not decision.refuse
+    assert decision.refuse
+    assert decision.code == "low_lexical_overlap"
+    assert decision.gates["entity_coverage"] is True  # genuinely disabled
 
 
-def test_raising_min_overlap_refuses_the_distractor_without_the_entity_gate() -> None:
+def test_both_lexical_gates_off_admits_the_distractor() -> None:
+    """Pins that the refusal really comes from G3/G4 and nothing else."""
     hits = customer_hits()
     policy = RefusalPolicy.from_config(
-        CONFIG, require_entity_coverage=False, min_overlap=0.5
+        CONFIG, require_entity_coverage=False, min_overlap=0.0
     )
     decision = assess(
         "What is the email of customer Zanzibar Petrov?", hits, policy=policy
     )
-    assert decision.refuse
-    assert decision.code == "low_lexical_overlap"
+    assert not decision.refuse
 
 
 def test_entity_gate_tolerates_a_minority_of_ungrounded_terms() -> None:

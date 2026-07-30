@@ -80,8 +80,12 @@ def test_question_with_no_supporting_context_refuses() -> None:
     answer = ExtractiveGenerator().generate(DISTRACTOR, customer_hits(), CONFIG)
 
     assert answer.refused is True
-    assert answer.reason.startswith("ungrounded_entities")
     assert answer.citations == ()
+    # Which gate reports first is evaluation-order detail; that both lexical
+    # gates rejected it is the behaviour worth pinning.
+    gates = answer.trace["refusal"]["gates"]
+    assert gates["lexical_overlap"] is False
+    assert gates["entity_coverage"] is False
 
 
 def test_empty_retrieval_refuses() -> None:
@@ -170,11 +174,19 @@ def test_prompt_scaffold_alone_can_exhaust_a_tiny_budget() -> None:
 
 
 def test_budget_too_small_for_any_chunk_refuses_rather_than_crashing() -> None:
+    """Isolates the packing path: the lexical gates are relaxed on purpose.
+
+    Without that, the refusal gates would reject this question first and the
+    budget-exhaustion branch -- the thing under test -- would never run.
+    """
     config = GenerationConfig(max_prompt_tokens=120, max_chunk_tokens=100_000)
+    permissive = RefusalPolicy.from_config(
+        config, min_overlap=0.0, require_entity_coverage=False
+    )
     hits = [make_hit("giant", "value " * 20_000, 0.95)]
 
     answer = ExtractiveGenerator().generate(
-        "What is the value in the giant record?", hits, config
+        "What is the value in the giant record?", hits, config, policy=permissive
     )
 
     assert answer.refused is True
@@ -204,11 +216,39 @@ def test_refusal_trace_exposes_every_gate() -> None:
 
 
 def test_policy_overrides_reach_the_generator() -> None:
-    permissive = RefusalPolicy.from_config(CONFIG, require_entity_coverage=False)
-    answer = ExtractiveGenerator().generate(
-        DISTRACTOR, customer_hits(), CONFIG, policy=permissive
+    """A policy passed at call time must actually drive the gates."""
+    hits = customer_hits()
+    assert ExtractiveGenerator().generate(DISTRACTOR, hits, CONFIG).refused is True
+
+    permissive = RefusalPolicy.from_config(
+        CONFIG, min_overlap=0.0, require_entity_coverage=False
     )
-    assert answer.refused is False  # the gate really was the thing refusing
+    relaxed = ExtractiveGenerator().generate(
+        DISTRACTOR, hits, CONFIG, policy=permissive
+    )
+    assert relaxed.refused is False  # the gates really were the thing refusing
+
+
+def test_generation_config_drives_every_gate() -> None:
+    """One config object configures the whole refusal path."""
+    strict = GenerationConfig(min_overlap=0.99, min_entity_coverage=1.0)
+    policy = RefusalPolicy.from_config(strict)
+    assert policy.min_overlap == 0.99
+    assert policy.min_entity_coverage == 1.0
+    assert policy.overlap_top_k == strict.overlap_top_k
+    assert policy.caseless_entity_min_length == strict.caseless_entity_min_length
+
+    # ...and reaches the generator without an explicit policy argument.
+    # One ungrounded entity of five terms: coverage 0.8, so the default 0.75
+    # answers and a raised threshold refuses, driven purely by the config.
+    borderline = "Is Ahmed Al-Sayed from Cairo or Zanzibar?"
+    hits = customer_hits()
+    assert ExtractiveGenerator().generate(
+        borderline, hits, GenerationConfig()
+    ).refused is False
+    assert ExtractiveGenerator().generate(
+        borderline, hits, GenerationConfig(min_entity_coverage=0.9)
+    ).refused is True
 
 
 def test_arabic_and_cjk_context_answers_and_cites() -> None:

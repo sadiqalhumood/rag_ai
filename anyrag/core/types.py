@@ -236,6 +236,19 @@ class QueryRoute(str, Enum):
     HYBRID = "hybrid"
 
 
+# Documented keys for `Answer.trace`. These are a contract, not an internal
+# convention: the eval harness reads them to score SQL coverage, and if the
+# producer and the reader disagree on a key name, coverage silently reads 0%
+# instead of failing loudly.
+TRACE_SQL = "sql"                 # the generated SQL string, if any
+TRACE_SQL_ERROR = "sql_error"     # why SQL generation or execution failed
+TRACE_SCALAR = "scalar"           # the aggregate result (mirrors Answer.value)
+TRACE_ROUTE = "route"             # QueryRoute value as a string
+TRACE_ROUTE_REASON = "route_reason"
+TRACE_RETRIEVAL = "retrieval"     # per-stage retrieval trace
+TRACE_REFUSAL = "refusal"         # structured refusal decision
+
+
 @dataclass(frozen=True)
 class Citation:
     chunk_id: str
@@ -243,6 +256,11 @@ class Citation:
     row_refs: tuple[RowRef, ...] = ()
     score: float = 0.0
     quoted_span: str = ""
+    #: Kind of the cited chunk. A schema-card citation legitimately has no row
+    #: refs, so without this a scorer cannot tell "cited a schema card" from
+    #: "cited nothing useful" and has to cross-reference the retrieval result
+    #: to find out.
+    kind: ChunkKind | None = None
 
 
 @dataclass(frozen=True)
@@ -260,6 +278,12 @@ class Answer:
     reason: str = ""
     route: QueryRoute | None = None
     trace: Mapping[str, Any] = field(default_factory=dict)
+    #: The computed result of an AGGREGATE question, when there is one.
+    #:
+    #: Without a typed field, a scorer has to regex the answer prose for a
+    #: number -- and "shipped 3 of 12 items" parses to 3. An aggregate result
+    #: is structured data and should not survive only as text.
+    value: Any | None = None
 
     def __post_init__(self) -> None:
         if not self.refused and not self.citations:

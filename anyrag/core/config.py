@@ -94,10 +94,24 @@ class RetrievalConfig:
             mode = "dense"
         else:
             mode = "bm25"
-        kinds = {
+        # Any unmapped set MUST get its own name. Collapsing unknown sets to
+        # "both" silently merged distinct ablation cells: a grid using
+        # {ROW, SQL_RESULT} for its row cell named itself identically to the
+        # both-kinds cell, and 18 cells became 12 with results files
+        # overwriting each other. Names are identity here, not decoration.
+        canonical = {
             frozenset({ChunkKind.ROW}): "row",
             frozenset({ChunkKind.SCHEMA_CARD}): "card",
-        }.get(self.chunk_kinds, "both")
+            frozenset({ChunkKind.ROW, ChunkKind.SCHEMA_CARD}): "both",
+        }
+        kinds = canonical.get(self.chunk_kinds)
+        if kinds is None:
+            codes = {
+                ChunkKind.ROW: "row",
+                ChunkKind.SCHEMA_CARD: "card",
+                ChunkKind.SQL_RESULT: "sql",
+            }
+            kinds = "+".join(sorted(codes[k] for k in self.chunk_kinds)) or "nokinds"
         bits = [mode, "rerank" if self.rerank else "norerank", kinds]
         if self.expansion:
             bits.append("expand")
@@ -121,10 +135,42 @@ class GenerationConfig:
     min_support_score: float = 0.02
     #: Minimum number of supporting chunks required to answer.
     min_support_chunks: int = 1
-    #: Refuse when the best hit's lexical overlap with the question is below
-    #: this; the primary guard against answering distractor questions.
-    min_overlap: float = 0.18
+    #: Refuse when the best hit's idf-weighted overlap with the question is
+    #: below this.
+    #:
+    #: Calibrated for the *weighted* metric, not plain token overlap. Plain
+    #: overlap does not discriminate: a distractor asking for a nonexistent
+    #: customer scores ~0.50 purely on generic schema words ("email",
+    #: "customer"), which is above any threshold low enough to admit real
+    #: questions. Weighting terms by inverse document frequency over the
+    #: retrieved set drops that distractor to ~0.29 while an answerable twin
+    #: stays at ~1.0, so the gap sits either side of 0.35.
+    min_overlap: float = 0.35
+    #: How many top hits the overlap gate examines before giving up.
+    overlap_top_k: int = 5
+    #: Fraction of value-like question tokens (names, ids, numbers) that must
+    #: actually appear in the retrieved text. Defence in depth behind
+    #: min_overlap: catches a distractor that borrows enough schema vocabulary
+    #: to clear the overlap gate.
+    min_entity_coverage: float = 0.75
+    #: Toggle for the entity gate, so the eval can ablate it in isolation.
+    require_entity_coverage: bool = True
+    #: Minimum length for a token in a caseless script (Arabic, CJK) to count
+    #: as an entity. Without a floor, common function words are treated as
+    #: entities and legitimate questions are refused.
+    caseless_entity_min_length: int = 4
     generator: str = "extractive"
+
+    def __post_init__(self) -> None:
+        # Deliberately NOT rejecting a max_prompt_tokens below the instruction
+        # scaffold. It was tempting -- such a budget can only ever refuse -- but
+        # "every chunk is too large, so refuse gracefully instead of crashing"
+        # is a behaviour worth testing, and a constructor guard would make that
+        # test unwritable.
+        if not 0.0 <= self.min_overlap <= 1.0:
+            raise ConfigError("min_overlap must be in [0, 1]")
+        if not 0.0 <= self.min_entity_coverage <= 1.0:
+            raise ConfigError("min_entity_coverage must be in [0, 1]")
 
 
 @dataclass(frozen=True)

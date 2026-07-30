@@ -16,8 +16,9 @@ __pycache__/
 evals/.cache/
 evals/data/*.sqlite
 evals/data/*.sqlite-journal
+evals/data/manifest.json
 evals/exports/
-evals/results/*.json
+evals/results/**/*.json
 
 # Local Postgres test cluster
 .pgdata/

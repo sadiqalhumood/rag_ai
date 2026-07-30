@@ -320,9 +320,15 @@ def weighted_overlap(
 class RefusalPolicy:
     """Thresholds for the four gates.
 
-    `from_config` takes the three that `GenerationConfig` owns; the rest are
-    defaults here because that dataclass is frozen and orchestrator-owned.
-    Every field is overridable per call, so the eval harness can sweep them.
+    Every gate is driven by `GenerationConfig`, so one config object configures
+    the whole refusal path and the ablation grid can sweep it from a single
+    place. The defaults below mirror that dataclass's defaults; they exist so a
+    bare `RefusalPolicy()` behaves identically to
+    `RefusalPolicy.from_config(GenerationConfig())` rather than silently
+    diverging. `from_config(config, **overrides)` is the normal constructor.
+
+    `min_plain_overlap` is the one field with no config counterpart: it is an
+    off-by-default diagnostic, not part of the policy.
     """
 
     #: G1/G2. A hit below this score is not evidence.
@@ -330,7 +336,7 @@ class RefusalPolicy:
     #: G2. How many hits must clear `min_support_score`.
     min_support_chunks: int = 1
     #: G3. Applied to the *idf-weighted* overlap, not plain term overlap.
-    min_overlap: float = 0.18
+    min_overlap: float = 0.35
     #: G4. Fraction of the question's entity-like terms that must appear
     #: somewhere in the retrieved text. 0.75 means a two-entity question
     #: tolerates zero misses and a four-entity question tolerates one.
@@ -343,6 +349,7 @@ class RefusalPolicy:
     caseless_entity_min_length: int = CASELESS_ENTITY_MIN_LENGTH
     #: Optional floor on *unweighted* overlap. Off by default: the weighted
     #: metric is strictly more informative, and stacking both over-refuses.
+    #: No `GenerationConfig` counterpart -- set it explicitly to use it.
     min_plain_overlap: float = 0.0
 
     @classmethod
@@ -351,6 +358,10 @@ class RefusalPolicy:
             min_support_score=config.min_support_score,
             min_support_chunks=config.min_support_chunks,
             min_overlap=config.min_overlap,
+            min_entity_coverage=config.min_entity_coverage,
+            require_entity_coverage=config.require_entity_coverage,
+            overlap_top_k=config.overlap_top_k,
+            caseless_entity_min_length=config.caseless_entity_min_length,
         )
         return replace(base, **overrides) if overrides else base
 
