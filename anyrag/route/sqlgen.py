@@ -255,6 +255,15 @@ class HeuristicSqlGenerator:
         if lex is None:
             raise SqlGenerationError("no schema lexicon available")
 
+        # Before building anything: if the question constrains on a value the
+        # data does not contain, the honest answer is "no such thing", not the
+        # unfiltered aggregate. Dropping an unresolvable predicate answers a
+        # different question than the one asked, with full confidence.
+        unresolved = lex.unresolved_constraints(question)
+        if unresolved:
+            detail = ", ".join(f"{val!r} for {col}" for val, col in unresolved)
+            raise SqlGenerationError(f"unknown value(s) in question: {detail}")
+
         agg, cue = self._detect_agg(question)
         table, join = self._pick_table(question, lex)
         target = self._detect_target(question, lex, table, agg)

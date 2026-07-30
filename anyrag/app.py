@@ -87,6 +87,22 @@ class AnyRAG:
         sql_generator=None,  # noqa: ANN001
         build_lexicon: bool = True,
     ) -> None:
+        # `AnyRAG(cfg)` is a natural call shape and should not be a crash. When
+        # the first positional is a config carrying a source URI, open it.
+        if isinstance(source, AnyRagConfig):
+            if config is not None and config is not source:
+                raise ConfigError(
+                    "received an AnyRagConfig positionally and another via "
+                    "config=; pass exactly one"
+                )
+            config = source
+            if not config.source_uri:
+                raise ConfigError(
+                    "AnyRAG(config) needs config.source_uri set, or pass a "
+                    "DataSource as the first argument"
+                )
+            source = open_source(config.source_uri)
+
         self.source = source
         self.config = config or AnyRagConfig()
         self.embedder = embedder if embedder is not None else get_embedder(self.config.embedder)
@@ -293,6 +309,29 @@ class AnyRAG:
             TRACE_ROUTE: decision.route.value,
             TRACE_ROUTE_REASON: decision.reason,
         }
+
+        # A question asking for an attribute the schema does not have is
+        # unanswerable regardless of route. Retrieval will happily return the
+        # named entity's row and a generator will compose something plausible
+        # from it -- an answer to a question nobody asked. Schema questions are
+        # exempt: their attribute word ("columns") is deliberately meta.
+        # Exempt only true schema questions, which the router marks by
+        # preferring schema cards *exclusively*. An ordinary LOOKUP also lists
+        # SCHEMA_CARD among its preferred kinds, so testing for membership
+        # rather than equality disabled this guard entirely.
+        is_schema_question = decision.preferred_kinds == frozenset(
+            {ChunkKind.SCHEMA_CARD}
+        )
+        if self.lexicon is not None and not is_schema_question:
+            missing = self.lexicon.unresolved_attributes(question)
+            if missing:
+                trace["unresolved_attributes"] = missing
+                return Answer.refusal(
+                    "the data has no attribute matching "
+                    + ", ".join(repr(m) for m in missing),
+                    route=decision.route,
+                    trace=trace,
+                )
 
         hits = self.retriever.retrieve(question, retrieval)
         trace[TRACE_RETRIEVAL] = getattr(self.retriever, "last_trace", {}) or {}
