@@ -54,6 +54,41 @@ def test_adversarially_long_single_field(tok) -> None:  # noqa: ANN001
     text = "x" * 200_000
     out = tok.truncate(text, 50)
     assert tok.count(out) <= 50
+    # The budget assertion above is satisfied trivially by a tokenizer that
+    # counts the whole string as one token, so pin the count itself: an
+    # unbroken run must cost roughly its length, not O(1).
+    assert tok.count(text) >= 1000
+    assert len(out) < 10_000
+
+
+@pytest.mark.parametrize("tok", TOKENIZERS, ids=IDS)
+@pytest.mark.parametrize(
+    ("text", "max_chars_per_token"),
+    [
+        ("x" * 200_000, 64),
+        ("9" * 100_000, 64),
+        # Whitespace legitimately compresses far harder in a real BPE
+        # (cl100k encodes 100k spaces as ~782 tokens), so it gets a looser
+        # bound. The point is that it must not be O(1).
+        (" " * 100_000, 512),
+        ("ب" * 50_000, 64),
+        ("一" * 50_000, 64),
+    ],
+    ids=["latin", "digits", "spaces", "arabic", "cjk"],
+)
+def test_unbroken_runs_are_not_counted_as_one_token(
+    tok, text, max_chars_per_token
+) -> None:  # noqa: ANN001
+    """No single unbroken run may collapse to a handful of tokens.
+
+    A budget enforced with such a tokenizer would admit a context many times
+    larger than the model can accept -- exactly the failure that a "real
+    tokenizer, not a heuristic" requirement exists to prevent. The regression
+    this pins: an unbounded `[A-Za-z]+` rule counted 200k characters as ONE
+    token, and the budget test above still passed because it only asserted the
+    count was *under* budget.
+    """
+    assert tok.count(text) >= len(text) / max_chars_per_token
 
 
 @pytest.mark.parametrize("tok", TOKENIZERS, ids=IDS)

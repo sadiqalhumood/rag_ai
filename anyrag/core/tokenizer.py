@@ -75,8 +75,20 @@ class RegexTokenizer:
     way a character heuristic does.
     """
 
+    # Every run is length-bounded. An unbounded `[A-Za-z]+` counts a 200k-char
+    # unbroken string as ONE token, which would let a pathological field sail
+    # through a token budget that is doing exactly what it was told. Bounding
+    # the runs keeps the count within a small constant factor of a real BPE
+    # tokenizer instead of being wrong by five orders of magnitude.
+    _MAX_RUN = 24
+
     _PATTERN = re.compile(
-        r"[A-Za-z]+|\d+|[؀-ۿ]+|[一-鿿]|\s+|[^\sA-Za-z\d]",
+        rf"[A-Za-z]{{1,{_MAX_RUN}}}"
+        rf"|\d{{1,{_MAX_RUN}}}"
+        rf"|[؀-ۿ]{{1,{_MAX_RUN}}}"
+        r"|[一-鿿]"
+        rf"|\s{{1,{_MAX_RUN}}}"
+        r"|[^\sA-Za-z\d]",
     )
 
     def __init__(self) -> None:
@@ -107,6 +119,12 @@ class RegexTokenizer:
         for tok in raw:
             if tok.isspace():
                 pending += tok
+                # Flush long whitespace runs so they cannot accumulate into a
+                # single piece; otherwise bounding the regex achieves nothing
+                # for an all-whitespace input.
+                if len(pending) >= self._MAX_RUN:
+                    pieces.append(pending)
+                    pending = ""
             else:
                 pieces.append(pending + tok)
                 pending = ""

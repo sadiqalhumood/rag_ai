@@ -135,6 +135,65 @@ incremental-upsert requirement. Maintaining document frequencies and average
 document length per-document instead means upsert and delete touch only the
 affected document.
 
+### D16. Fallback tokenizer bug: unbounded runs counted as one token
+Found by ingest-eng, confirmed and fixed. `RegexTokenizer`'s `[A-Za-z]+` rule
+counted a 200,000-character unbroken string as **one token** — against tiktoken's
+25,000. Any purely token-based budget check would have passed it straight
+through, which is precisely the failure the "measure with a real tokenizer, never
+a character heuristic" requirement exists to prevent. In a degraded run
+(tiktoken unavailable) `generate/packer.py` shared the exposure.
+
+Two things were wrong, and the second is the more embarrassing:
+1. The regex runs were unbounded. Now capped at 24 characters per piece, and
+   long whitespace runs are flushed rather than accumulated.
+2. **My own adversarial test passed trivially.** It asserted only that the count
+   after truncation was *under* budget — which is satisfied perfectly by a
+   tokenizer that thinks everything is one token. The test now pins the count
+   itself: an unbroken run must cost roughly proportional to its length.
+
+Whitespace gets a looser bound (512 chars/token vs 64) because real BPE
+genuinely compresses it hard — cl100k encodes 100k spaces as 782 tokens. The
+requirement is that it not be O(1), not that it match content density.
+
+ingest-eng had contained the bug locally with a character backstop and flagged
+that the exposure was not theirs alone. Fixing it at the tokenizer means every
+consumer benefits rather than each defending separately.
+
+### D17. Refusal overlap threshold raised 0.18 -> 0.35, before any eval was run
+generation-eng found that plain token overlap does not discriminate: a
+distractor asking for a nonexistent customer scores ~0.50 purely on generic
+schema words ("email", "customer"), above any threshold low enough to admit real
+questions. They built an idf-weighted overlap (weights computed over the
+retrieved set, no corpus stats) which drops that distractor to ~0.29 while an
+answerable twin stays at ~1.0.
+
+`min_overlap` had been calibrated for the *plain* metric. Left at 0.18 against
+the weighted metric, the entity-coverage gate would have been the sole
+discriminator; at 0.35 the overlap gate catches the distractor by itself and
+entity coverage becomes defence in depth.
+
+**Timing matters for honesty here:** this was decided from a controlled
+two-example comparison before the eval harness had produced a single number, so
+it is calibration rather than tuning against the test set. The four entity-gate
+knobs were also lifted into `GenerationConfig` so the ablation can sweep them.
+
+### D18. Rejected: a `max_prompt_tokens` floor
+Tempting — a budget below the ~260-token instruction scaffold can only ever
+refuse. But it broke four of generation-eng's tests, and those tests were right:
+"every chunk is too large, so refuse gracefully rather than crash" is behaviour
+worth testing, and a constructor guard makes that test unwritable. The config
+records why the guard is absent.
+
+### D19. Composite primary keys join on `"|"` with no escaping
+`pk_string` joins composite key values with `"|"`. Values containing a literal
+`"|"` could in principle collide. Kept unescaped because it is a cross-agent
+contract that ingest, sources, and the eval's gold answers must all reproduce
+byte-for-byte, and an escaping scheme is one more thing for three
+implementations to agree on. Raised independently by both source-eng and
+ingest-eng. Rather than add an unused helper in `core` and hope everyone adopts
+it, integration will assert that ingest-produced `RowRef`s for composite-key
+tables match the eval's gold refs exactly — a test beats a convention.
+
 ### D12. `SET` and `INTO` are deny-listed despite false-positive risk
 A column literally named `set` or `into` would be rejected. Accepted: the
 deny-words only match on word boundaries (so `offset`, `dataset_id`,
