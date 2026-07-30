@@ -7,7 +7,15 @@ recorded in DECISIONS.md) before the held-out eval templates are written.
 
 from __future__ import annotations
 
-from .router import Router, classify  # noqa: F401
-from .sqlgen import HeuristicSqlGenerator  # noqa: F401
+from .router import RouteDecision, Router, classify  # noqa: F401
+from .schema_lexicon import SchemaLexicon  # noqa: F401
+from .sqlgen import HeuristicSqlGenerator, SqlPlan  # noqa: F401
 
-__all__ = ["Router", "classify", "HeuristicSqlGenerator"]
+__all__ = [
+    "RouteDecision",
+    "Router",
+    "classify",
+    "SchemaLexicon",
+    "HeuristicSqlGenerator",
+    "SqlPlan",
+]

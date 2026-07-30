@@ -90,6 +90,24 @@ fixture initdb's a throwaway cluster under an unprivileged user. If that proves
 impossible it becomes a BLOCKERS.md entry with a skip guard — but it will not be
 quietly mocked and reported as passing.
 
+### D12a. Subagents dispatched via `general-purpose` with their definition file loaded
+The custom agent types in `.claude/agents/` were not resolvable by the Agent
+tool: this session's agent registry was snapshotted at startup, before those
+files existed. Rather than inline the prompts (which would have made
+`.claude/agents/*.md` decorative), each subagent is dispatched as
+`general-purpose` and instructed to read its own definition file first and treat
+it as binding operating instructions. The file-ownership rules therefore still
+come from the committed definitions, which is what the brief asked for.
+
+### D12b. The router was written *before* the eval templates existed
+Amendment 3 requires that router/sqlgen not be overfitted to question templates
+the orchestrator could see. Rather than rely on a promise not to look, the
+router and `HeuristicSqlGenerator` were written concurrently with eval-eng's
+first pass — at a point when `evals/questions.py` did not yet exist on disk.
+Both are derived from `TableProfile`/`TableSchema` only. The held-out set will
+still be written after the freeze, so the leakage check remains meaningful; this
+just removes the most obvious way for it to be defeated in advance.
+
 ### D12. `SET` and `INTO` are deny-listed despite false-positive risk
 A column literally named `set` or `into` would be rejected. Accepted: the
 deny-words only match on word boundaries (so `offset`, `dataset_id`,
