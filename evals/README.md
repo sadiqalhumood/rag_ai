@@ -123,6 +123,27 @@ Two rules are enforced in code and in tests:
    rows that do not exist are used. Counting a legitimate zero as a
    hallucination would make the headline number dishonest in our favour.
 
+## Held-out distractor probes
+
+Each held-out distractor carries a `probe` tag naming the hypothesis it tests.
+Several templates contain **both** a phrasing the guard's regex covers and one
+it does not, so the per-template split separates "the guard is wrong about the
+schema" from "the guard never fired".
+
+| probe | n | what it separates |
+|---|---|---|
+| `possessive_or_imperative_frame` | 12 | "X's phone number" vs "the phone number of X" |
+| `value_without_adjacent_column_word` | 10 | "orders were expedited" vs "orders have the status 'expedited'" |
+| `prose_date_not_iso_pair` | 8 | "during March 2025" vs an ISO pair |
+| `entity_verb_outside_pattern` | 10 | "suppliers *serve* X" vs "suppliers *deliver to* X" |
+| `real_nouns_absent_edge` | 8 | every noun real, the relationship absent |
+| `untouched_column_vocabulary` | 8 | near-misses in columns dev never probed |
+| `fresh_fake_tables` | 6 | fake tables disjoint from dev's |
+| `possessive_free_near_miss` | 4 | fresh name perturbations |
+
+Run `python -m evals.compare` to regenerate the gap table and this breakdown
+into `evals/results/LEAKAGE.md`.
+
 ## Dev vs held-out
 
 Both sets are written. The held-out set was written **after** the router freeze

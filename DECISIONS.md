@@ -350,3 +350,77 @@ Originally recorded as `0439893552d38469ea65c9a48ee8ed04c156bbe7`. That commit w
 frozen files is byte-identical, only the commit object changed. Recording the
 supersession rather than silently editing the SHA, since this reference is the
 evidence that the held-out templates were written after the freeze.
+
+### D30. The held-out set found real leakage. My D29 claim was wrong.
+In D29 I wrote that the refusal guards were "derived from the schema rather than
+from question wording — that is what should let them generalise." **That was
+wrong, and the held-out set is what proved it.**
+
+| metric | dev (n=338) | held-out (n=341) | gap |
+|---|---|---|---|
+| **false-answer rate** | **13.3%** | **43.9%** | **+30.6 pts** |
+| aggregate accuracy | 69.9% | 51.5% | −18.4 |
+| citation precision | 44.3% | 34.1% | −10.2 |
+| SQL coverage | 71.2% | 63.9% | −7.3 |
+| router accuracy | 64.8% | 74.8% | *+10.0* |
+| recall@10 | 0.7294 | 0.7361 | +0.007 |
+
+Held-out (43.9%) is closer to my *first* tuning round (46.9%) than my last
+(12.5%). Nearly all of the apparent improvement was phrasing-specific.
+
+**The gap is precisely localised, which makes it diagnostic rather than
+demoralising.** Retrieval is flat and router accuracy is *better* on held-out —
+the embedder, retriever and route classifier generalise fine. Only the refusal
+layer collapsed. Verified directly against the frozen generator:
+
+```
+"How many orders have the status 'expedited'?"  -> REFUSED (unknown value)
+"How many orders were expedited?"               -> SELECT COUNT(*) FROM orders
+```
+
+Identical semantics, identical schema facts, different sentence frame. The
+second returns the unfiltered total with full confidence — the exact failure
+`unresolved_constraints`'s own docstring claims it prevents. The guard checks
+for an **adjacent column word**; it does not check the schema. Guard 2 has the
+same defect (`_ATTR_REQUEST` matches four regex frames, and a possessive matches
+none), as does guard 3 (a closed verb list: "deliver to" ✓, "serve" ✗).
+
+eval-eng's in-template controls isolate the mechanism beyond argument: same
+guard, same template, same schema facts, only the sentence shape differs —
+attribute guard 1/3 false on the dev frame vs **9/9 false** on a possessive
+frame; value guard **9/9 false** unanchored vs 0/1 when a table word happens to
+sit alongside.
+
+Guards 4 (out-of-range dates) and 5 (NULL aggregate) transferred. They are the
+two that consult data rather than sentence shape, which is the whole lesson.
+
+### D31. Not fixing the guards, deliberately
+The fix is identified and scoped: match candidate values against the full
+categorical vocabulary regardless of adjacency, and replace the regex frames
+with a dependency-free notion of "restrictive modifier on the counted entity".
+
+I am not applying it. Tuning against the held-out set would repeat precisely the
+error it just exposed, and would leave no clean set to validate on — the third
+round of that mistake is not better than the second. Doing this properly needs a
+*third* template set written after a re-freeze, which is a bigger piece of work
+than the time remaining supports.
+
+Recording the diagnosis, the mechanism, and the exact failing pair is worth more
+than a fix I cannot honestly validate. The 43.9% stands as the reportable
+number.
+
+### D32. eval-eng's caveat on its own set, which I am passing through
+eval-eng read the frozen router before writing the held-out templates. Every
+question is a form a real user would type (possessives, imperatives, "first half
+of 2024", "serve" for "deliver to") and nothing was contorted to break the
+guards — but it knew where to look. **Treat 43.9% as a well-targeted probe of
+known weak spots, not an unbiased estimate of production traffic.** The
+in-template controls are what make it diagnostic: identical semantics either
+side of a sentence-frame boundary, differing 9/9 vs 0/1.
+
+### D33. A separate coverage gap, not leakage
+Held-out `ho_date_periods` scores 0/16: "the first half of 2024" silently widens
+to `BETWEEN '2024-01-01' AND '2024-12-31'` — a confident wrong number, not a
+refusal. Dev's two date forms (ISO pair, month+year) both parse, so this is a
+real gap in named-period parsing that dev never probed. Distinct from the
+leakage above, and it is the same failure class as D26.
