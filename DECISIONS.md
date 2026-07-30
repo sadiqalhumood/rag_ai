@@ -108,6 +108,33 @@ Both are derived from `TableProfile`/`TableSchema` only. The held-out set will
 still be written after the freeze, so the leakage check remains meaningful; this
 just removes the most obvious way for it to be defeated in advance.
 
+### D13. `Hit.rank` is 1-based (cross-agent contract)
+The top result of any `search()` has `rank == 1`; ranks are contiguous within a
+call. Raised by index-eng as a decision that belongs in this log rather than in
+one package's docstring, and they were right — retrieval, fusion, and the eval
+harness all depend on it.
+
+Rationale: the frozen `Hit` dataclass defaults `rank=0`. Under a 1-based
+convention that default reads as "unranked" instead of silently claiming the top
+position, and RRF becomes `1 / (rrf_k + rank)` with no off-by-one fudge and no
+division-by-zero edge. `anyrag.index.FIRST_RANK` is exported so downstream code
+asserts against it rather than hardcoding.
+
+### D14. Tuples in `Chunk.meta` survive persistence round-trips
+`MetadataFilter.equals` compares with `!=`, so a tuple silently becoming a list
+after a persist/load cycle would break filtering in a way that looks like a
+retrieval quality problem rather than a serialization bug. The JSONL chunk
+sidecar therefore type-tags tuples. Non-JSON-able metadata raises rather than
+being dropped.
+
+### D15. BM25 is hand-written rather than taking `rank_bm25`
+Verified: the library is not installed and not imported; the two mentions in
+`anyrag/index/bm25.py` are docstring prose explaining the choice. The library's
+API forces a full corpus rebuild on every update, which is incompatible with the
+incremental-upsert requirement. Maintaining document frequencies and average
+document length per-document instead means upsert and delete touch only the
+affected document.
+
 ### D12. `SET` and `INTO` are deny-listed despite false-positive risk
 A column literally named `set` or `into` would be rejected. Accepted: the
 deny-words only match on word boundaries (so `offset`, `dataset_id`,
