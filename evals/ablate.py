@@ -490,13 +490,29 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     questions = build_questions(manifest, args.templates, args.seed, limit=args.limit)
 
+    # Wrapped before ingest, so the chunk vectors go through the cache too --
+    # installing it afterwards would only ever catch query embeddings.
+    holder: dict[str, CachedEmbedder | None] = {"cache": None}
+
+    def _wrap(app: Any) -> None:
+        if not args.no_cache:
+            holder["cache"] = install_cache(app)
+
     engine = build_engine(
         source_uri,
         embedder=args.embedder,
         generator=args.generator,
         generation=generation,
+        on_built=_wrap,
     )
-    cache = None if args.no_cache else install_cache(engine)
+    cache = holder["cache"]
+    if cache is None and not args.no_cache:
+        print(
+            "note: the engine exposes no writable `.embedder`, so the disk cache "
+            "is inactive. The grid still embeds once: the engine is built and "
+            "ingested a single time and only RetrievalConfig varies per cell.",
+            file=sys.stderr,
+        )
 
     print(f"running 18 cells over n={len(questions)} questions", file=sys.stderr)
     run = run_grid(

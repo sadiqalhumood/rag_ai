@@ -490,8 +490,48 @@ def summarize(results: Sequence[QuestionResult]) -> dict[str, Any]:
             "n_generated": sum(1 for r in agg_route if r.sql_generated),
         },
         "by_type": _by_type(results),
+        # Router accuracy and SQL coverage must never be pooled across template
+        # sets: a dev->held-out gap is a leakage finding, and averaging the two
+        # is precisely how it gets smoothed away. A single-set run reports one
+        # entry here; a `--templates all` run reports both, separately.
+        "by_template_set": _by_template_set(results),
     }
     return summary
+
+
+def _by_template_set(results: Sequence[QuestionResult]) -> dict[str, dict[str, Any]]:
+    sets = sorted({r.template_set for r in results})
+    out: dict[str, dict[str, Any]] = {}
+    for name in sets:
+        subset = [r for r in results if r.template_set == name]
+        routed = [r for r in subset if r.predicted_route is not None]
+        agg_route = [
+            r for r in subset if r.expected_route in AGGREGATE_ROUTES and r.answerable
+        ]
+        unanswerable = [r for r in subset if not r.answerable]
+        agg_graded = [r for r in subset if r.aggregate_ok is not None]
+        scored = [r for r in subset if r.retrieval is not None and r.retrieval.n_gold]
+        out[name] = {
+            "n": len(subset),
+            "router_accuracy": _mean([1.0 if r.route_correct else 0.0 for r in routed]),
+            "router_n": len(routed),
+            "sql_coverage": _mean([1.0 if r.sql_generated else 0.0 for r in agg_route]),
+            "sql_n": len(agg_route),
+            "false_answer_rate": (
+                sum(1 for r in unanswerable if r.false_answer) / len(unanswerable)
+                if unanswerable
+                else None
+            ),
+            "false_answer_n": len(unanswerable),
+            "aggregate_accuracy": _mean(
+                [1.0 if r.aggregate_ok else 0.0 for r in agg_graded]
+            ),
+            "aggregate_n": len(agg_graded),
+            "recall@10": _mean([r.retrieval.recall_at.get(10) for r in scored]),
+            "ndcg@10": _mean([r.retrieval.ndcg_at.get(10) for r in scored]),
+            "retrieval_n": len(scored),
+        }
+    return out
 
 
 def _confusion(results: Sequence[QuestionResult]) -> dict[str, dict[str, int]]:

@@ -25,10 +25,19 @@ MIN_TYPES = 6
 
 
 @pytest.fixture(scope="module")
-def full_questions():
+def _full_manifest():
+    return Manifest(build_manifest(seed=TEST_SEED))
+
+
+@pytest.fixture(scope="module")
+def full_questions(_full_manifest):
     """The real, full-size question set -- the one the size floor applies to."""
-    manifest = Manifest(build_manifest(seed=TEST_SEED))
-    return build_questions(manifest, "dev", TEST_SEED)
+    return build_questions(_full_manifest, "dev", TEST_SEED)
+
+
+@pytest.fixture(scope="module")
+def full_heldout(_full_manifest):
+    return build_questions(_full_manifest, "heldout", TEST_SEED)
 
 
 # --------------------------------------------------------------------------
@@ -51,11 +60,13 @@ def test_question_ids_are_unique_and_namespaced(full_questions):
     assert all(q.qid.startswith("dev-") for q in full_questions)
 
 
-def test_question_text_is_unique_enough_to_be_meaningful(full_questions):
-    texts = [q.text for q in full_questions]
-    # Some collision is acceptable (two orders can share a phrasing shape) but a
-    # set that is mostly duplicates would inflate n without adding signal.
-    assert len(set(texts)) / len(texts) > 0.95
+def test_no_question_is_asked_twice_within_a_set(full_questions, full_heldout):
+    """A duplicate is not a second measurement, it is a double-weighted one."""
+    for questions in (full_questions, full_heldout):
+        texts = [q.text for q in questions]
+        assert len(set(texts)) == len(texts), [
+            t for t in texts if texts.count(t) > 1
+        ][:5]
 
 
 def test_building_twice_gives_identical_questions(manifest):
@@ -97,25 +108,133 @@ def test_routes_are_assigned_per_type(full_questions):
 # --------------------------------------------------------------------------
 
 
-def test_heldout_templates_are_not_written_yet():
-    assert Q.HELDOUT_AVAILABLE is False
-    assert Q.HELDOUT_TEMPLATES == []
+def test_heldout_set_is_written_and_comparable_in_size(full_heldout):
+    assert Q.HELDOUT_AVAILABLE is True
+    counts = type_counts(full_heldout)
+    assert len(full_heldout) >= MIN_QUESTIONS, counts
+    assert set(counts) == set(Q.QTYPES), counts
+    for qtype, n in counts.items():
+        assert n >= 15, f"{qtype} has only {n} held-out questions"
 
 
-def test_selecting_heldout_fails_loudly_rather_than_returning_nothing(manifest):
-    with pytest.raises(RuntimeError, match="frozen"):
-        build_questions(manifest, "heldout", TEST_SEED)
+def test_all_resolves_to_both_sets():
+    assert Q.resolve_sets("all") == ("dev", "heldout")
 
 
-def test_all_falls_back_to_dev_only_while_heldout_is_unwritten(manifest):
-    assert Q.resolve_sets("all") == ("dev",)
-
-
-def test_dev_and_heldout_template_keys_will_be_disjoint():
+def test_dev_and_heldout_template_keys_are_disjoint():
     dev_keys = {t.key for t in Q.DEV_TEMPLATES}
     heldout_keys = {t.key for t in Q.HELDOUT_TEMPLATES}
     assert dev_keys & heldout_keys == set()
     assert len(dev_keys) == len(Q.DEV_TEMPLATES)
+    assert len(heldout_keys) == len(Q.HELDOUT_TEMPLATES)
+
+
+def test_no_question_text_appears_in_both_sets(full_questions, full_heldout):
+    """Disjoint means disjoint. A shared phrasing is leakage by definition."""
+    dev_texts = {q.text for q in full_questions}
+    heldout_texts = {q.text for q in full_heldout}
+    assert dev_texts & heldout_texts == set()
+
+
+def test_heldout_phrasings_are_not_dev_phrasings_with_the_words_moved(
+    full_questions, full_heldout
+):
+    """A held-out set of near-duplicates would measure nothing.
+
+    Compared on token *multisets* per question type: if held-out questions were
+    dev questions reordered, the bag of words would be near-identical.
+    """
+    import re as _re
+
+    def shapes(questions, qtype):
+        out = set()
+        for q in questions:
+            if q.qtype != qtype:
+                continue
+            # Strip the interpolated entity, keeping the sentence frame.
+            frame = _re.sub(r"[A-Z][\w'-]*|\d[\d.-]*|'[^']*'", "~", q.text)
+            out.add(" ".join(frame.split()))
+        return out
+
+    for qtype in Q.QTYPES:
+        dev_frames = shapes(full_questions, qtype)
+        heldout_frames = shapes(full_heldout, qtype)
+        assert dev_frames and heldout_frames
+        overlap = dev_frames & heldout_frames
+        assert not overlap, f"{qtype} reuses dev sentence frames: {overlap}"
+
+
+def test_qids_are_namespaced_by_template_set(full_heldout):
+    assert all(q.qid.startswith("heldout-") for q in full_heldout)
+    assert all(q.template_set == "heldout" for q in full_heldout)
+
+
+def test_building_both_sets_together_keeps_qids_unique(manifest):
+    combined = build_questions(manifest, "all", TEST_SEED)
+    qids = [q.qid for q in combined]
+    assert len(qids) == len(set(qids))
+    assert {q.template_set for q in combined} == {"dev", "heldout"}
+
+
+def test_a_qid_means_the_same_question_however_it_was_built(manifest):
+    """A qid in a results file must identify a question on its own.
+
+    With a counter shared across template sets, `heldout-distractor-0001` is a
+    different question in a heldout-only run than in a `--templates all` run,
+    and results files stop being joinable to the question set that produced
+    them.
+    """
+    combined = {q.qid: q.text for q in build_questions(manifest, "all", TEST_SEED)}
+    for name in ("dev", "heldout"):
+        alone = build_questions(manifest, name, TEST_SEED)
+        assert alone, name
+        for q in alone:
+            assert combined[q.qid] == q.text, q.qid
+
+
+# --------------------------------------------------------------------------
+# The router freeze (amendment 3)
+# --------------------------------------------------------------------------
+
+
+def test_the_router_freeze_is_verifiable():
+    """Re-check the frozen files against the recorded blob hashes.
+
+    The freeze is what makes the held-out number mean anything, so it is
+    verified mechanically on every test run rather than trusted. If any of the
+    three frozen files is edited after the freeze, this fails and the held-out
+    run is invalidated -- which is the intended behaviour, not an inconvenience.
+
+    The freeze commit was rewritten by a `--reset-author` rebase after it was
+    communicated. Blob hashes are checked rather than the commit SHA precisely
+    because they survive that kind of rewrite: they pin the *content* that was
+    frozen, which is the thing that actually matters.
+    """
+    import subprocess
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    for path, expected in Q.ROUTER_FREEZE["frozen_blobs"].items():
+        target = repo / path
+        assert target.exists(), path
+        out = subprocess.run(
+            ["git", "hash-object", str(target)],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+        assert out.returncode == 0, out.stderr
+        actual = out.stdout.strip()
+        assert actual == expected, (
+            f"{path} has changed since the router freeze "
+            f"({actual} != {expected}); the held-out run is invalidated "
+            "and the router must be re-frozen"
+        )
+
+
+def test_the_freeze_records_the_superseded_commit():
+    # A quietly-corrected hash is indistinguishable from one chosen after the
+    # fact, so both are kept.
+    assert Q.ROUTER_FREEZE["commit"] != Q.ROUTER_FREEZE["superseded_commit"]
+    assert "reset-author" in Q.ROUTER_FREEZE["supersession"]
 
 
 # --------------------------------------------------------------------------
@@ -352,20 +471,63 @@ def test_distractor_entities_are_genuinely_near_misses(questions):
         assert shared / max(len(fake), len(real)) > 0.7, (fake, real)
 
 
-def test_distractor_categories_and_enums_do_not_exist(conn, questions):
+def test_distractor_categories_and_enums_do_not_exist(conn, questions, manifest):
     checked = 0
     for q in questions:
         if q.meta.get("kind") not in ("near_miss_category", "near_miss_enum"):
             continue
-        table, column = q.meta["table"], q.meta["column"]
-        n = _scalar(
-            conn,
-            f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" = ?',
-            (q.meta["fake_value"],),
+        table = q.meta["table"]
+        value = q.meta["fake_value"]
+        # Held-out "unanchored" distractors name a value with no column word
+        # beside it, so there is no single column to check -- the value must be
+        # absent from *every* column of the table.
+        columns = (
+            [q.meta["column"]] if "column" in q.meta else list(manifest.columns(table))
         )
-        assert n == 0, (q.qid, q.meta["fake_value"])
+        for column in columns:
+            n = _scalar(
+                conn, f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" = ?', (value,)
+            )
+            assert n == 0, (q.qid, value, column)
         checked += 1
     assert checked >= 8
+
+
+def test_unanchored_distractors_really_have_no_adjacent_column_word(questions, manifest):
+    """The probe only means something if the column word is genuinely absent.
+
+    If "How many orders were refunded?" happened to contain the word `status`,
+    it would be a dev-style anchored distractor wearing a held-out label, and a
+    refusal would prove nothing about generalisation.
+    """
+    checked = 0
+    for q in questions:
+        if q.meta.get("probe") != "value_without_adjacent_column_word":
+            continue
+        words = set(q.text.lower().replace("?", "").split())
+        for table in manifest.table_names:
+            for column in manifest.columns(table):
+                for variant in {column, column.rstrip("s"), column.replace("_", " ")}:
+                    assert variant.lower() not in words, (q.qid, variant)
+        # The template carries one deliberate control whose value *does* sit
+        # beside a table name; everything else must have no table word either,
+        # or the probe is not testing what it claims to test.
+        if not q.meta.get("anchored_on_table_name"):
+            for table in manifest.table_names:
+                for variant in {table, table.rstrip("s"), table.replace("_", " ")}:
+                    idx = q.text.lower().split()
+                    if variant.lower() in idx:
+                        pos = idx.index(variant.lower())
+                        prev = idx[pos - 1] if pos else ""
+                        assert prev in ("many", "the", ""), (q.qid, variant, prev)
+        checked += 1
+    assert checked >= 8
+    anchored = [
+        q for q in questions
+        if q.meta.get("probe") == "value_without_adjacent_column_word"
+        and q.meta.get("anchored_on_table_name")
+    ]
+    assert len(anchored) == 1, "expected exactly one in-template control"
 
 
 def test_distractor_attributes_are_not_columns(conn, questions):

@@ -160,6 +160,7 @@ def build_engine(
     generator: str = "extractive",
     index_dir: str | None = None,
     generation: GenerationConfig | None = None,
+    on_built=None,
 ):
     """Construct the real `AnyRAG` facade and ingest the source.
 
@@ -197,6 +198,14 @@ def build_engine(
             errors.append(str(exc))
     else:  # pragma: no cover - reported, not swallowed
         raise TypeError("cannot construct AnyRAG; tried:\n  " + "\n  ".join(errors))
+
+    # Hook run *before* ingest, which is the only useful moment to wrap the
+    # embedder: ingest is where the chunk vectors are computed, so a wrapper
+    # installed afterwards can only ever see query embeddings -- and only if the
+    # sub-components read `app.embedder` rather than holding their own
+    # reference from construction.
+    if on_built is not None:
+        on_built(app)
 
     ingest = getattr(app, "ingest", None)
     if callable(ingest):

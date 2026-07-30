@@ -7,6 +7,7 @@ self-grading report worth reading.
 
 ```
 gen_db.py     seeded synthetic SQLite + manifest.json (schema + every row)
+compare.py    dev vs held-out gap + per-probe diagnosis -> results/LEAKAGE.md
 questions.py  343 questions across 8 types, gold computed over the manifest
 metrics.py    exact retrieval / aggregate / citation / refusal metrics
 run_eval.py   one config -> evals/results/<name>.json, provenance-stamped
@@ -21,9 +22,11 @@ tests/        the harness grading itself
 .venv/bin/python -m evals.gen_db --seed 7 --export-dir evals/exports   # + CSV/Parquet
 .venv/bin/python -m evals.questions --templates dev --show 10  # inspect the set
 .venv/bin/python -m evals.run_eval --config hybrid_rerank_both
+.venv/bin/python -m evals.run_eval --config hybrid_rerank_both --templates heldout
+.venv/bin/python -m evals.compare                              # dev vs held-out
 .venv/bin/python -m evals.run_eval --subset distractors --generator anthropic
 .venv/bin/python -m evals.ablate --timebox-minutes 90
-.venv/bin/python -m pytest evals -q                            # 124 tests
+.venv/bin/python -m pytest evals -q                            # 135 tests
 ```
 
 Everything is offline and a pure function of `--seed`.
@@ -52,9 +55,10 @@ why the harness was buildable and fully testable before `anyrag/app.py` existed.
 | `date_range_aggregate` | 36 | AGGREGATE | integer scalar |
 | `join_relationship` | 40 | HYBRID | 1–3 rows, sometimes + scalar |
 | `schema_question` | 23 | LOOKUP | a schema card |
-| `distractor` | 64 | varies | **none — refusal is correct** |
+| `distractor` | 60 / 66 | varies | **none — refusal is correct** |
 
-343 total. Gold for every one is computed in plain Python over
+338 dev + 341 held-out. Counts above are dev; the held-out set carries the same
+types at comparable size. Gold for every one is computed in plain Python over
 `manifest.json`; `tests/test_questions.py` recomputes a sample of the same
 answers with SQL against the generated SQLite file, so two independent paths
 have to agree before any of it is trusted.
@@ -94,13 +98,13 @@ These are the choices a reader has to know to interpret a number.
 ## Distractors, and why they are the way they are
 
 The false-answer rate is the headline, so a trivially refusable distractor set
-would make the whole report meaningless. The 64 distractors are:
+would make the whole report meaningless. The dev set's 60 distractors are:
 
-| kind | n | why it is hard |
+| kind (dev set) | n | why it is hard |
 |---|---|---|
 | `near_miss_entity` | 20 | plausible alternative *spellings* ("Lina Nassar" for "Lina Nasser"), not random typos |
 | `missing_attribute` | 10 | a **real** customer or product, an attribute no table has |
-| `out_of_range_date` | 10 | windows entirely outside the two-year span |
+| `out_of_range_date` | 6 | windows entirely outside the two-year span |
 | `near_miss_category` | 8 | "Stationary" for "Stationery" — a real English word |
 | `near_miss_enum` | 6 | "refunded", "kiosk", "Diamond" tier |
 | `missing_table` | 6 | suppliers, warehouses, invoices |
@@ -121,14 +125,29 @@ Two rules are enforced in code and in tests:
 
 ## Dev vs held-out
 
-`DEV_TEMPLATES` is written. `HELDOUT_TEMPLATES` is **deliberately empty** until
-`route/router.py` and `route/sqlgen.py` are frozen and the freeze SHA is in
-`DECISIONS.md`. A held-out set written against a router that does not exist yet
-measures nothing. `--templates heldout` raises rather than silently returning an
-empty set, and `--templates all` resolves to dev-only while that holds.
+Both sets are written. The held-out set was written **after** the router freeze
+recorded in `questions.ROUTER_FREEZE`, and covers the same eight types with
+materially different sentence shapes — different openings, different constraint
+ordering, date windows in prose, relationships traversed from the other end.
 
-Dropping the held-out set in requires adding `@heldout_template(...)` functions
-and flipping `HELDOUT_AVAILABLE` — one edit, in one file, no restructuring.
+**The freeze is verified, not trusted.** `ROUTER_FREEZE` pins the *blob hashes*
+of the three frozen files, and `test_the_router_freeze_is_verifiable` re-checks
+them against the working tree on every run. If any frozen file is edited, the
+suite fails and the held-out numbers are invalidated — which is the intended
+behaviour. Blob hashes rather than the commit SHA, because the freeze commit was
+rewritten by a `--reset-author` rebase after it was communicated; hashes pin the
+content, which survives that. Both SHAs are recorded, since a quietly-corrected
+hash is indistinguishable from one chosen after the fact.
+
+Held-out distractors carry a `probe` tag naming the hypothesis each one tests,
+and several templates deliberately contain **both** a phrasing the guard's
+pattern covers and one it does not. Comparing those inside a single template
+separates "the guard is wrong about the schema" from "the guard never fired",
+which a headline rate alone cannot do.
+
+Router accuracy and SQL coverage are reported **separately per set and never
+pooled** — `summarize()` emits `by_template_set` so even a `--templates all` run
+cannot accidentally average the two.
 
 ## Provenance
 

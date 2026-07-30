@@ -16,7 +16,10 @@ from .fakes import LexicalFakeEngine
 
 @pytest.fixture(scope="module")
 def tiny(questions):
-    return stratified_sample(questions, 16, TEST_SEED)
+    # Large enough that the retrieval axis actually separates on the fake
+    # engine; below ~24 questions dense and bm25 rank the same gold chunk into
+    # the top 10 either way and every cell ties.
+    return stratified_sample(questions, 32, TEST_SEED)
 
 
 # --------------------------------------------------------------------------
@@ -84,12 +87,20 @@ def test_the_chunk_kind_axis_actually_changes_retrieval(grid_run):
 
 
 def test_the_retrieval_axis_produces_different_numbers(grid_run):
-    both = {
-        c.mode: c.summary["retrieval"]["recall@10"]
-        for c in grid_run.cells
-        if c.kinds == "both" and c.rerank == "off"
-    }
-    assert len(set(both.values())) > 1, both
+    """dense / bm25 / hybrid must not be silently the same cell three times.
+
+    Asserted across every (rerank, chunk-kind) combination rather than one row:
+    on a small sample any single row can tie by chance, and a test that fails on
+    a coincidence is a test people learn to ignore.
+    """
+    by_axis: dict[tuple[str, str], set[float]] = {}
+    for cell in grid_run.cells:
+        key = (cell.rerank, cell.kinds)
+        by_axis.setdefault(key, set()).add(
+            round(cell.summary["retrieval"]["recall@10"], 6)
+        )
+    differing = [k for k, v in by_axis.items() if len(v) > 1]
+    assert differing, f"retrieval mode changed nothing anywhere: {by_axis}"
 
 
 # --------------------------------------------------------------------------

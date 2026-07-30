@@ -357,3 +357,63 @@ def test_adapter_raises_a_readable_error_when_nothing_fits(manifest):
     adapter = R.EngineAdapter(Wrong())
     with pytest.raises(TypeError, match="no supported call shape"):
         adapter.retrieve("q", RetrievalConfig())
+
+
+# --------------------------------------------------------------------------
+# Dev vs held-out comparison (the leakage check)
+# --------------------------------------------------------------------------
+
+
+def test_comparison_never_pools_the_two_template_sets(manifest, questions):
+    """`summarize` must break router accuracy out per template set.
+
+    Pooling a dev and a held-out run is exactly how a leakage finding gets
+    averaged away, so the split is a property of the summary itself rather than
+    something the caller has to remember to do.
+    """
+    from evals.questions import stratified_sample
+
+    sample = stratified_sample(questions, 60, TEST_SEED)
+    assert {q.template_set for q in sample} == {"dev", "heldout"}
+    engine = OracleEngine(manifest, sample)
+    payload = R.run_eval(engine, manifest=manifest, questions=sample, seed=TEST_SEED)
+    by_set = payload["summary"]["by_template_set"]
+    assert set(by_set) == {"dev", "heldout"}
+    for name in ("dev", "heldout"):
+        assert by_set[name]["n"] > 0
+        assert by_set[name]["router_accuracy"] is not None
+        assert by_set[name]["false_answer_n"] > 0
+    assert sum(by_set[n]["n"] for n in by_set) == len(sample)
+
+
+def test_compare_renders_a_gap_table(manifest, questions, tmp_path):
+    from evals import compare as C
+    from evals.questions import stratified_sample
+
+    payloads = {}
+    for name in ("dev", "heldout"):
+        subset = stratified_sample(
+            [q for q in questions if q.template_set == name], 40, TEST_SEED
+        )
+        engine = LexicalFakeEngine(manifest)
+        payloads[name] = R.run_eval(
+            engine, manifest=manifest, questions=subset, seed=TEST_SEED, templates=name
+        )
+    lines = C.compare(payloads["dev"], payloads["heldout"])
+    text = "\n".join(lines)
+    assert "false-answer rate" in text
+    assert "| metric | dev | held-out | gap |" in text
+    assert "Never pooled" in text
+
+
+def test_compare_flags_runs_that_are_not_comparable(manifest, questions):
+    from evals import compare as C
+    from evals.questions import stratified_sample
+
+    subset = stratified_sample(questions, 20, TEST_SEED)
+    engine = LexicalFakeEngine(manifest)
+    a = R.run_eval(engine, manifest=manifest, questions=subset, seed=TEST_SEED)
+    b = R.run_eval(engine, manifest=manifest, questions=subset, seed=TEST_SEED)
+    b["provenance"]["embedder"] = dict(b["provenance"]["embedder"], name="something-else")
+    text = "\n".join(C.compare(a, b))
+    assert "not comparable" in text

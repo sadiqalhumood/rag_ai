@@ -53,4 +53,10 @@ def conn(db_path):
 
 @pytest.fixture(scope="session")
 def questions(manifest):
-    return build_questions(manifest, "dev", TEST_SEED)
+    """Both template sets.
+
+    The SQL gold-verification tests run over this, so held-out gold is checked
+    by the same independent path as dev gold -- a held-out set whose answers
+    were never cross-checked would be worse than no held-out set at all.
+    """
+    return build_questions(manifest, "all", TEST_SEED)
