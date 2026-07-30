@@ -25,8 +25,17 @@ Fallback paths (`HashingEmbedder`, `RegexTokenizer`) are implemented and unit
 tested, but **are not in use**. They exist so that a future environment without
 network degrades result quality instead of breaking the harness.
 
-### Known open risk, not yet a blocker
-PostgreSQL refuses to run as root. The integration-test fixture must `initdb` a
-cluster under an unprivileged user. If that fails, the Postgres adapter tests
-will be skipped with a reason and recorded here — they will not be mocked and
-reported as passing.
+### Phase 0 open risk — now RESOLVED
+PostgreSQL refuses to run as root, so it was unclear whether the Postgres
+adapter could be integration-tested at all.
+
+**Resolved in Phase 1.** The test fixture successfully `initdb`s and starts a
+throwaway cluster under an unprivileged user on a loopback port. **59 Postgres
+tests run against a live server; none are skipped and none are mocked.**
+Verified independently of the agent's report: `pytest tests/test_sources_postgres.py -q -rs`
+shows 59 passed with zero skip reasons, and `ps` shows live `postgres`
+processes.
+
+The fixture still degrades honestly: if the binaries are absent or the cluster
+cannot start, every test in that file skips with the specific underlying error
+rather than a generic message.
