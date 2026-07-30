@@ -2,15 +2,24 @@
 
 **Active embedder: `local:sentence-transformers/all-MiniLM-L6-v2` @ `1110a243fdf4` (dim 384) — the real model, NOT degraded.** Verified before any code was written: cos(paraphrase)=0.5643 vs cos(unrelated)=-0.0289. The `HashingEmbedder` fallback is implemented and unit-tested but was never used, so no number in this repo carries a degraded-embedder caveat.
 
-> ⚠️ **Numbers below marked (provisional) were measured while `evals/questions.py` was being edited concurrently** to add the held-out template set. The dev set shifted from n=343 to n=338 mid-run. The ablation grid is internally consistent (single run, n=343, commit `061a5e7`), but the dev single-config numbers and the ablation were measured against slightly different question sets. **Re-run both to reconcile** — commands in §Reproduce.
+> ## ⚠️ Read this before quoting any number
+>
+> **The dev false-answer rate of 13.3% does not generalise. On held-out templates it is 43.9% — a +30.6 point gap.** Three rounds of dev-driven tuning moved dev from 65.6% to 12.5%, and nearly all of that gain was phrasing-specific: held-out sits closer to the *first* round (46.9%) than the last. **43.9% is the number to quote.** Details in bullet 1 and `evals/results/LEAKAGE.md`.
+>
+> The ablation grid (n=343, commit `061a5e7`) was measured before eval-eng deduplicated questions and stabilised qids; single-config dev numbers are now n=338. The grid's *relative* comparisons stand — every cell shares the same question set — but its absolute false-answer column reads 12.5% where the corrected dev figure is 13.3%.
 
 ---
 
 ## Ten bullets
 
-1. **What works end to end.** Point it at SQLite, Postgres, or a directory of CSV/Parquet; it ingests, indexes (dense + BM25), routes each question LOOKUP/AGGREGATE/HYBRID, generates and lints SQL for aggregates, and returns answers with citations back to specific rows. 882 tests pass.
+1. **The most important result is a negative one: the leakage check fired.** Dev false-answer rate 13.3%, held-out **43.9%**, gap **+30.6 points**. The gap is precisely localised, which makes it diagnostic rather than merely bad news — retrieval is flat (recall@10 0.729 → 0.736) and router accuracy is *better* on held-out (64.8% → 74.8%), so the embedder, retriever and route classifier all generalise. **Only the refusal layer collapsed.** Verified directly against the frozen generator:
+   ```
+   "How many orders have the status 'expedited'?"  -> REFUSED (unknown value)
+   "How many orders were expedited?"               -> SELECT COUNT(*) FROM orders
+   ```
+   Identical semantics, identical schema facts, different sentence frame; the second returns the unfiltered total with full confidence. The guard checks for an **adjacent column word** — it does not check the schema, despite my claim in DECISIONS D29 that it did. Guards that consult *data* (out-of-range dates, NULL aggregates) transferred; guards that match *sentence shape* did not. That is the whole lesson.
 
-2. **The headline number: false-answer rate 12.5–13.3%** on unanswerable questions (8 false answers), down from **65.6% on the first real eval run**. Read the caveat in bullet 3 before quoting it.
+2. **What works end to end.** Point it at SQLite, Postgres, or a directory of CSV/Parquet; it ingests, indexes (dense + BM25), routes each question LOOKUP/AGGREGATE/HYBRID, generates and lints SQL for aggregates, and returns answers with citations back to specific rows. 882 unit tests + 135 eval-harness tests pass.
 
 3. **That number measures refusal-threshold logic, not hallucination resistance.** The default `ExtractiveGenerator` composes answers by selection only — a test asserts every emitted line is a verbatim substring of retrieved text — so it *cannot* fabricate the way an LLM can. **This number does not transfer to an LLM-backed config.** `AnthropicGenerator` exists behind the same interface and applies the same gates, but **`ANTHROPIC_API_KEY` was not set in this environment, so the side-by-side LLM comparison was never run.** There is no LLM false-answer number in this repo.
 
@@ -24,21 +33,33 @@
 
 8. **Chunk-ID stability holds on real data.** 5,777 chunks from the 5,767-row synthetic DB; a second ingest embedded **0** and left index size unchanged. Same property verified independently on the Parquet source. IDs deliberately exclude content (content hash lives in `meta`), which is what makes re-ingestion an update rather than a duplication.
 
-9. **What is stubbed or unproven.** (a) No LLM generator run — no API key. (b) The ablation logged **0 embedding-cache hits and 0 misses**, so the cache the design called for was never exercised; it didn't matter at this scale (4.3 min for 18 cells) but the requirement is not demonstrated. (c) NL→SQL is heuristic and single-hop only: `orders → regions` needs two FK hops and is unsupported, so SQL coverage is 71.2%, not ~100%. (d) Router accuracy is **64.4%** — the weakest headline number and the most obvious place to improve. (e) `RemoteEmbedder` and `CrossEncoderReranker` are implemented but unexercised.
+9. **What is stubbed or unproven.** (a) No LLM generator run — no API key. (b) The ablation's embedding cache never intercepted (it wrapped the embedder after ingest had already run); eval-eng has since fixed it, but the `ABLATIONS.md` in this repo was produced with `0 hits / 0 misses`. It was never load-bearing — building the engine once and varying only `RetrievalConfig` is what gets the grid to 4.3 min. (c) NL→SQL is heuristic and single-hop only: `orders → regions` needs two FK hops and is unsupported, so SQL coverage is 71.2%, not ~100%. (d) Router accuracy is **64.4%** — the weakest headline number and the most obvious place to improve. (e) `RemoteEmbedder` and `CrossEncoderReranker` are implemented but unexercised.
 
-10. **The leakage risk, stated plainly.** Three rounds of guards took the dev false-answer rate 65.6% → 46.9% → 31.2% → 12.5%, and **every round was driven by inspecting dev-set failures**. That is textbook overfitting. `route/` was frozen at commit `60adca7` and the held-out templates written only afterwards, precisely so the gap is measurable. **Held-out numbers were pending at the time of writing — see §Held-out.** A large dev→held-out gap is a real finding about these guards, not noise to average away.
+10. **The fix is scoped but deliberately not applied.** Match candidate values against the full categorical vocabulary regardless of adjacency, and replace the regex frames with a real notion of "restrictive modifier on the counted entity". Tuning against the held-out set would repeat exactly the error it just exposed and leave nothing clean to validate on; doing it properly needs a *third* template set written after a re-freeze. The diagnosis, the mechanism and the exact failing pair are worth more than a fix that cannot be honestly validated.
 
 ---
 
-## Held-out results
+## Held-out results (the leakage check)
 
-*Pending at time of writing.* Run:
+| metric | dev (n=338) | held-out (n=341) | gap |
+|---|---|---|---|
+| **false-answer rate** | **13.3%** (8/60) | **43.9%** (29/66) | **+30.6 pts** |
+| aggregate accuracy | 69.9% | 51.5% | −18.4 |
+| citation precision | 44.3% | 34.1% | −10.2 |
+| SQL coverage | 71.2% | 63.9% | −7.3 |
+| router accuracy | 64.8% | 74.8% | **+10.0** |
+| recall@10 | 0.7294 | 0.7361 | +0.007 |
+| nDCG@10 | 0.6933 | 0.6753 | −0.018 |
 
-```bash
-.venv/bin/python -m evals.run_eval --config hybrid_rerank_both --templates heldout
-```
+Reported separately and never pooled; `summarize()` emits `by_template_set` so even `--templates all` cannot merge them.
 
-Report router accuracy and SQL coverage **separately** from dev; never pool them. If the held-out false-answer rate is materially worse than dev's, the guards in §Reproduce keyed on dev phrasing rather than on schema structure, and that is the honest conclusion.
+**Which guards transferred.** Failed: unanchored values 9/10, possessive/imperative attribute frames 10/12, absent *relationships* 6/8 (no guard covers those at all). Transferred: fake table names 0/6, possessive near-miss 0/4, untouched column vocabulary 1/8, prose dates 1/8.
+
+**Caveat on the held-out set itself, passed through from eval-eng:** it read the frozen router before writing these templates. Nothing was contorted to break the guards — every question is a form a real user would type — but it knew where to look. **Treat 43.9% as a well-targeted probe of known weak spots, not an unbiased estimate of production traffic.** The in-template controls are what make it diagnostic: identical semantics either side of a sentence-frame boundary, differing 9/9 vs 0/1.
+
+**A separate coverage gap, not leakage:** `ho_date_periods` scores 0/16 — "the first half of 2024" silently widens to the whole year and returns a confident wrong number. Dev's two date forms both parse, so dev never probed it.
+
+**The freeze is now enforced mechanically**, not by discipline: `questions.py` records the frozen files' blob hashes (which survive a rebase, unlike a commit SHA) and a test re-checks them on every run, so editing a frozen file fails the suite instead of silently invalidating these numbers.
 
 ---
 
