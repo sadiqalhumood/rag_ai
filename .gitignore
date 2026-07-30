@@ -1,0 +1,23 @@
+# Environments and secrets
+.venv/
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# anyrag artifacts
+.anyrag/
+evals/.cache/
+evals/data/*.sqlite
+evals/data/*.sqlite-journal
+evals/exports/
+evals/results/*.json
+
+# Local Postgres test cluster
+.pgdata/

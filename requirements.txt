@@ -1,0 +1,17 @@
+# Core runtime -- required for the offline eval path.
+numpy>=1.26
+tiktoken>=0.7
+
+# Local embeddings. torch is CPU-only here; install with
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# to avoid pulling CUDA wheels.
+torch>=2.2
+sentence-transformers>=3.0
+
+# Source adapters. Both are optional at runtime: the registry records an import
+# failure and keeps the other adapters working.
+psycopg[binary]>=3.1     # postgres adapter
+pyarrow>=15.0            # parquet support in the files adapter
+
+# Tests
+pytest>=8.0
